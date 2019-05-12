@@ -54,16 +54,6 @@ train <- data.factor[train.index, ]
 
 # test
 test <- data.factor[-train.index, ]
-
-# SCALE
-train.scaled.num <- scale(train[, ..num])
-train.scaled <- cbind(train.scaled.num, train[, ..cat], train[, ..label])
-
-means <- attr(train.scaled.num, "scaled:center")
-std <- attr(train.scaled.num, "scaled:scale")
-
-test.scaled.num <- scale(test[, ..num], center = means, scale = std)
-test.scaled <- cbind(test.scaled.num, test[, ..cat], test[, ..label])
 ```
 
 
@@ -146,12 +136,12 @@ train.control <- trainControl(method = "repeatedcv",
 ```
 
 ```{r, echo=FALSE}
-selection <- readRDS("selection.rds")
-for (i in 1:3) {
-  sel <- selection[[i]]
-  print(methods[i])
-  print(sel[order(-sel$Accuracy),][1:5,])
-}
+#selection <- readRDS("selection.rds")
+#for (i in 1:3) {
+#  sel <- selection[[i]]
+#  print(methods[i])
+#  print(sel[order(-sel$Accuracy),][1:5,])
+#}
 ```
 # IZBIRA MODELA S PREČNIM PREVERJANJEM
 Za izbiro nabora spremenljivk obstajata dve skupini metod: wrapper in filter. Wrapper metode vrednotijo napovedni model z različnimi kombinacijami spremenljivk in s tem maksimizirajo model glede na določeno metriko (recursive feature elimination, genetic algorithms). Filter metode pa ocenijo relevantnost posameznih spremenljivk brez napovednega modela na podlagi izbranih kriterijev (univariatni filtri). Saj je naš cilj izbrati čimbolj efektiven in točen model, se bomo poslužili prve metode. 
@@ -174,35 +164,41 @@ Najprej definiramo vse možne kombinacije spremenljivk. Izbrali bomo nekoliko bo
 ## Izbran model
 Izbrali bomo le najboljše izmed modelov glede na metodo.
 ```{r, echo=FALSE}
-selected.models <- NULL
-for (i in 1:3) {
-  sel <- selection[[i]]
-  sel.model <- cbind(methods[i], sel[order(-sel$Accuracy),][1,])
-  colnames(sel.model) <- c('method', 'formula', 'parameter', "Accuracy", "Kappa", "AccuracySD", "KappaSD")
-  selected.models <- rbind(selected.models, sel.model)
-  
-}
-selected.models
+# selected.models <- NULL
+# for (i in 1:3) {
+#   sel <- selection[[i]]
+#   sel.model <- cbind(methods[i], sel[order(-sel$Accuracy),][1,])
+#   colnames(sel.model) <- c('method', 'formula', 'parameter', "Accuracy", "Kappa", "AccuracySD", "KappaSD")
+#   selected.models <- rbind(selected.models, sel.model)
+#   
+# }
+# selected.models
 ```
 Vidimo, da logistična regresija doseže najvejčo točnost in pri tem uporabi 8 od 13 atributov, met tem ko knn doseže za 1% manjšo točnost z uporabo le 6 atributov. Če primerjamo prej omenjena modela so jima skupne spremenljivke  cp, fbs, restecg, exang in slope. Dodatne spremenljivke, ki se pojavijo v modelu z odločitvenim drevesom pa so age, trestbps, chol in thalach. Torej preseka med spremenljivkami vseh treh modelov ni.
 
 ## Ocenjevanje modelov na testnih podatkih
 ```{r, echo=FALSE}
+set.seed(23)
 # IZBRANI MODELI
 knn <- train(as.formula(as.character(selected.models[1, 2])),
              data = train, 
              method = selected.models[1, 1],
-             trControl = train.control)
+             trControl = train.control,
+             preProcess = c("center","scale"))
+
+
 
 log <- train(as.formula(as.character(selected.models[2, 2])),
              data = train, 
              method = selected.models[2, 1],
-             trControl = train.control)
+             trControl = train.control,
+             preProcess = c("center","scale"))
 
 tree <- train(as.formula(as.character(selected.models[3, 2])),
              data = train, 
              method = selected.models[3, 1],
-             trControl = train.control)
+             trControl = train.control,
+             preProcess = c("center","scale"))
 ```
 
 
