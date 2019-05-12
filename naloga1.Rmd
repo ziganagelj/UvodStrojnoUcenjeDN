@@ -1,0 +1,588 @@
+---
+title: "naloga1-Nagelj"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  prettydoc::html_pretty:
+    theme: architect
+    toc: yes
+   # toc_float: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+options(warn=-1)
+library(gridExtra)
+library(grid)
+library(GA)
+library(ggplot2)
+library(data.table)
+library(caret)
+set.seed(23)
+```
+# UVOD
+V nalogi preverjamo razlicne lasnosti linearne regresije. Zato ustvarimo umetne podatke s katerimi bomo eksperimentiral. Najprej bomo ocenili parametre in preverili njihovo točnost, nato pa bomo testirali kaj se zgodi v primeru skaliranja in standariziranja podatkov.
+
+# PODATKI
+Podatke definiramo kot v nalogi in sicer po enačbi $$y = 7 + 5X_2 + 10X_3 - 4X_4 + \epsilon$$. Podatki so definirani na različnih skalah in sicer. $$X_2 = [10000, 60000]; X_3 = [10, 35]; X_4 = [0, 1]$$. Vsebinsko, te predstavljajo število čebel, temperaturo in vlažnost. Definiramo populacijo velikost 10000 iz katere bomo kasneje pridobili naše vzorce. Vrednost $y$ definiramo po zgornji enačbi pri čemer je $$\epsilon \sim{Normal(0, 100)}$$.
+
+```{r, echo=FALSE}
+popSize <- 10000
+vars <- paste0('X_i', 2:4)
+#numberBees
+#temperature
+#humidity
+data <- data.frame(x2 = runif(popSize, 10000, 60000),
+                   x3 = runif(popSize, 10, 35),
+                   x4 = runif(popSize, 0, 1))
+
+beta <- c(7, 5, 10, -4)
+names(beta) <- paste0('X_i', 1:4)
+dataX <- X <- unname(model.matrix(~as.matrix(data)))
+# epsilon ~ N(0, 100)
+epsilon <- rnorm(nrow(X), 0,  10)
+datay <- y <- X %*% beta + epsilon 
+
+# RANGE FOR PLOT
+range <- list()
+range[['X_i2']] <- seq(10000, 60000, 1000)
+range[['X_i3']] <- seq(10, 35, 0.5)
+range[['X_i4']] <- seq(0, 1, 0.02)
+
+# mean for plot on same scale
+povp <- colMeans(data) * beta[-1]
+names(povp) <- vars
+```
+
+# OCENJEVANJE PARAMETROV Z VEČKRATNIM VZORČENJEM
+Testirali bomo ocene parametrov na različnih skalah v odvisnosti od števila vzorcev in velikosti vzorcev. Prav tako si bomo ob fiksiranju enega pogledali konvergenco ocen v odvisnosti od drugega.
+
+## Podatki na nespremenjenih skalah
+
+### Ocenjevanje parametrov regresije
+Ogledali si bomo omejen nabor kombinacij in sicer pri številu vzorcev in velikostih vzorcev 10, 50 in 100.
+```{r, echo=FALSE}
+sampleSize <- c(10, 50, 100, 200, 500, 1000)
+nSubset <- c(10, 50, 100, 200, 500, 1000)
+
+sim <- NULL
+sim_se <- NULL
+for (n in sampleSize) {
+  for (k in nSubset) {
+    for (i in 1:k) {
+      index <- sample(1:nrow(X), size = n, replace = TRUE)
+      X_i <- X[index,]
+      y_i <- y[index]
+      model_i <- summary(lm(y_i ~ X_i-1))
+      sim <- rbind(sim, c(n, k, i, model_i$coefficients[, 'Estimate']))
+      sim_se <- rbind(sim_se, c(n, k, i, model_i$coefficients[, 'Std. Error']))
+    }
+  }
+}
+
+colnames(sim)[1:3] <- colnames(sim_se)[1:3]  <- c('sampleSize', 'nSubset', 'subset')
+sim <- data.table(sim)
+sim_se <- data.table(sim_se)
+
+GetXB <- function(spr) {
+  mt <- sweep(matrix(rep(range[[spr]], length(tmp[, get(spr)])), nrow = length(range[[spr]])), 2, tmp[, get(spr)], FUN = '*')
+  mt2 <- sweep(mt, 2, tmp[, X_i1], FUN = '+')
+  colnames(mt2) <- paste0('D', 1:ncol(mt2))
+  mt2 + sum(povp) - povp[spr]
+}
+
+
+
+GetPlotX_i <- function(spr) {
+  df <- data.frame(x = range[[spr]], mtx[[spr]], C = beta[spr] * range[[spr]] + beta[1] + sum(povp) - povp[spr])
+  df.melted <- reshape2::melt(df, id.var = 'x')
+  colnames(df.melted) <- c('x', 'subset', 'partial_y')
+  
+  plt <- ggplot(df.melted, aes(x=x, y=partial_y, col=subset)) +
+    geom_line() +
+    theme_minimal() +
+    ggtitle(paste0(" ")) +
+    theme(legend.position = "none")
+  
+  
+  if (spr == 'X_i2') {
+    plt <- plt + 
+      ggtitle(paste0("Sample size: ", n, "; #subsets: ", k))
+      
+  }
+  plt
+}
+```
+
+Primer rezultata simulacij:
+```{r}
+head(sim)
+```
+Ogladamo si prikaze regresijskih premic. Saj imamo opravka z multiplo regresijo prikažemo vpliv posamezne neodvisne spremenljivke, ko upoštevamo povprečne napovedi drugih dveh. Opazimo, da so zaradi velikih vrednosti $X_2$ vse regresijske premice tako blizu, da zgleda da je praktično samo ena. S tem, manjšamo skalo x-ov (relativno na y) vidimo vse večjo razpršenost in netočnost regresijskih premic.
+
+```{r, echo=FALSE}
+sampleSize <- c(10, 50, 100)
+nSubset <- c(10, 50, 100)
+
+
+for (n in sampleSize) {
+  for (k in nSubset) {
+    plot.list <- list()
+    tmp <- sim[sampleSize == n & nSubset == k]
+    mtx <- lapply(vars, GetXB)
+    names(mtx) <- vars
+    
+    for (var in vars) {
+      plot.list[[paste0(n, '_', k, '_', var)]] <- GetPlotX_i(var)
+    }
+    grid.arrange(grobs = plot.list, ncol=3)
+  }
+}
+
+
+
+
+```
+
+### Konvergenca
+Zanima nas kako hitro se z zgoraj navedeno metodo približujemo pravi vrednosti regresijskih koeficinetov. Pojav opazujemo ob fiksiranju bodisi števila vzorcev ali velikosti vzorcev glede na vrednosti drugega. V splošnem pri obeh spodnjih grafih konvergence opazimo, da IZ sicer pokrivajo pravo  vrednost, vendar so te pri neodvisnih spremenljivkah na manjših skalah precej širši v primerjavi s tistimi, ki so definirani na večji skali.
+
+#### Fiksna velikost vzorca
+Za velikost vzorca smo vzeli velikost 50. Opazimo, da IZ pravo vrednost pokrije že v 10 vzorcih. Razlike v napakah ocen parametrov pa so glede na razpon neodvisnih spremenljivk kot pričakovano precej različne. V primeru $X_2$ so napake praktično zanemarljive, že na začetku, med tem ko so v primeru $X_4$, ki je definiran med 0 in 1 razlike v povprečnih ocenah precej večje (tudi en velikostni razred prave).
+
+```{r, echo=FALSE}
+sampleSize_n50 <- 50
+nSubset_n50 <- seq(10, 500, 10)
+
+sim_n50 <- NULL
+for (n in sampleSize_n50) {
+  for (k in nSubset_n50) {
+    for (i in 1:k) {
+      index <- sample(1:nrow(X), size = n, replace = TRUE)
+      X_i <- X[index,]
+      y_i <- y[index]
+      model_i <- summary(lm(y_i ~ X_i-1))
+      sim_n50 <- rbind(sim_n50, c(n, k, i, model_i$coefficients[, 'Estimate']))
+    }
+  }
+}
+colnames(sim_n50)[1:3] <- c('sampleSize', 'nSubset', 'subset')
+sim_n50 <- data.table(sim_n50)
+
+povp_n50 <- sim_n50[, lapply(.SD, mean), by = nSubset]
+se_n50 <- sim_n50[, lapply(.SD, sd), by = nSubset]
+se_n50 <- data.table(sweep(se_n50, MARGIN = 1, STATS = sqrt(nSubset_n50), FUN = '/'))
+
+
+convergence_n50 <- NULL
+convergence_n50.plot <- list()
+for (var in paste0('X_i', 1:4)) {
+  dtmp <- data.frame(coef = var,
+                     nSubset = povp_n50[, nSubset],
+                     estimate = povp_n50[, get(var)],
+                     std_error = se_n50[, get(var)],
+                     beta = beta[var])
+  convergence_n50 <- rbind(convergence_n50, dtmp)
+  
+  cplt <- ggplot(dtmp, aes(x = nSubset, y = estimate, col=coef)) +
+    geom_point() +
+    geom_errorbar(width=.1, aes(ymin = estimate - 1.96*std_error, ymax = estimate + 1.96*std_error)) +
+    geom_point(shape=21, size=3, fill="white") + 
+    ggtitle(paste0('Ocene in IZ za: ', var)) + 
+    theme_minimal() + 
+    theme(legend.position = "none") + 
+    geom_hline(yintercept = beta[var])
+  
+  convergence_n50.plot[[var]] <- cplt
+  
+}
+
+
+convergence_n50.plot.grid <- grid.arrange(grobs = convergence_n50.plot, ncol=2)
+```
+
+
+#### Fiksno število vzorcev (subsetov)
+Za število vzorcev smo vzeli velikost 50. Opazimo, da IZ pravo vrednost pokrije že v 10 vzorcih. Za razliko od zgornjega grafa so povprečja veliko bolj stabilna in bližje pravim, vrednostim z večanjem velikosti vzorca. Vidimo torej, da dobimo boljše ocene hitreje z večanjem velikosti vzorca kot števila vzorcev.
+```{r, echo=FALSE}
+sampleSize_k50 <- seq(10, 500, 10)
+nSubset_k50 <- 50
+
+sim_k50 <- NULL
+for (n in sampleSize_k50) {
+  for (k in nSubset_k50) {
+    for (i in 1:k) {
+      index <- sample(1:nrow(X), size = n, replace = TRUE)
+      X_i <- X[index,]
+      y_i <- y[index]
+      model_i <- summary(lm(y_i ~ X_i-1))
+      sim_k50 <- rbind(sim_k50, c(n, k, i, model_i$coefficients[, 'Estimate']))
+    }
+  }
+}
+colnames(sim_k50)[1:3] <- c('sampleSize', 'nSubset', 'subset')
+sim_k50 <- data.table(sim_k50)
+
+
+povp_k50 <- sim_k50[, lapply(.SD, mean), by = sampleSize]
+se_k50 <- sim_k50[, lapply(.SD, sd), by = sampleSize]
+se_k50 <- data.table(sweep(se_k50, MARGIN = 1, STATS = sqrt(sampleSize_k50), FUN = '/'))
+
+
+convergence_k50 <- NULL
+convergence_k50.plot <- list()
+for (var in paste0('X_i', 1:4)) {
+  dtmp <- data.frame(coef = var,
+                     sampleSize = povp_k50[, sampleSize],
+                     estimate = povp_k50[, get(var)],
+                     std_error = se_k50[, get(var)],
+                     beta = beta[var])
+  convergence_k50 <- rbind(convergence_k50, dtmp)
+  
+  cplt <- ggplot(dtmp, aes(x = sampleSize, y = estimate, col=coef)) +
+    geom_point() +
+    geom_errorbar(width=.1, aes(ymin = estimate - 1.96*std_error, ymax = estimate + 1.96*std_error)) +
+    geom_point(shape=21, size=3, fill="white") + 
+    ggtitle(paste0('Ocene in IZ za: ', var)) + 
+    theme_minimal() + 
+    theme(legend.position = "none") + 
+    geom_hline(yintercept = beta[var])
+  
+  convergence_k50.plot[[var]] <- cplt
+  
+}
+
+convergence_k50.plot.grid <- grid.arrange(grobs = convergence_k50.plot, ncol=2)
+```
+
+### Delež pravih parametrov v IZ
+Za različne velikosti vzorca in število vzorcev pogledamo kolikokrat se parameter pod katerim smo generirali podatke res nahaja v IZ. Torej sedaj nas ponovno kot v zgornjem primeru zanima kakovost ocene in ali je naše zaupanje v njih uporavičeno. To naredimo na enak način kot pri konvergenci, torej ob fiksiranju posameznih parametrov našega vzorca. Iz spodnje tabele je razvidno, da je v obeh primerih, bodisi pri majhni velikosti vzorca ali majhnem številu vzorcev naš 95% IZ preozek in zajema populacijski vrednost v manj kot 95% primerih. To nas ne preseneti, saj je tak izračun IZ asimptotski. Razlik glede na skale neodvisnih spremenljiv ni.
+
+```{r, echo=FALSE}
+upper <- sim + 1.96*sim_se
+lower <- sim - 1.96*sim_se
+upper <- upper[,4:7]
+lower <- lower[,4:7]
+
+TestCoverage <- function(i) {
+  beta[i] < upper[, ..i] & beta[i] > lower[, ..i] 
+}
+cvg <- sapply(paste0('X_i',1:4), TestCoverage)
+
+cvg <- cbind(sim[, 1:3], cvg)
+
+cvg[, lapply(.SD, mean), by = .(sampleSize, nSubset)][sampleSize == 500 | nSubset == 500, -3]
+
+```
+
+
+## Podatki na spremenjenih skalah
+Kakovost modela si bomo ogledali še vprimeru minmax sklaliranje in standardizacije. Za to bomo primerjali RMSE modelov z različnimi skalami. Naš vzorec bo naključen žreb velikost 30. Normalnost odvisne spremenljivke je seveda ohranjena.
+
+```{r, echo=FALSE}
+# SCALING
+scaled.index <- sample(1:nrow(data), size = 30, replace = TRUE)
+scaled.data <- data.frame(data, y)
+
+pp.minmax <- preProcess(scaled.data, method = "range")
+pp.std <- preProcess(scaled.data, method = c("center", "scale"))
+
+scaled.dataTransformed.minmax <- predict(pp.minmax, scaled.data)
+scaled.dataTransformed.std <- predict(pp.std, scaled.data)
+
+scaled.X.minmax <- model.matrix(~as.matrix(scaled.dataTransformed.minmax)[, -4])
+scaled.X.std <- model.matrix(~as.matrix(scaled.dataTransformed.std)[, -4])
+colnames(scaled.X.minmax) <- colnames(scaled.X.std) <- paste0('x', 1:4)
+
+scaled.y.minmax <- scaled.dataTransformed.minmax[,4]
+scaled.y.std <- scaled.dataTransformed.std[,4]
+
+GetSE <- function(beta, X, y) {
+  error <- X %*% t(beta) - y
+  betaSE <- sqrt(mean(error^2) * solve(t(X) %*% X))
+  colnames(betaSE) <- rownames(betaSE) <- colnames(beta)
+  diag(betaSE)
+}
+
+GetRes <- function(beta, X, y) {
+  betaSE <- GetSE(beta, X, y)
+  res <- t(rbind(beta, betaSE))
+  res <- data.frame(unname(cbind(rownames(res), res)))
+  colnames(res) <- c('Parameter', 'Estimate', 'Std. Error')
+  res[, 2] <- as.numeric(as.character(res[, 2]))
+  res[, 3] <- as.numeric(as.character(res[, 3]))
+  res
+}
+
+
+# NUMERICAL ----
+cost <- function(X, y, beta) {
+  sum((X %*% beta - y)^2) / (2*length(y))
+}
+
+
+gd <- function(x, y, numIters, alpha = 0.2, epsilon = 10^-20){
+  iter <- 0
+  i <- 0
+  theta <- matrix(c(1,1),ncol(x),1)
+  cost <- (1/(2*nrow(x))) * t(x %*% theta - y) %*% (x %*% theta - y)
+  delta <- 1
+  while(delta > epsilon){
+    i <- i + 1
+    if (i == numIters) {
+      break
+    }
+    theta <- theta - (alpha / nrow(x)) * (t(x) %*% (x %*% theta - y))
+    cval <- (1/(2*nrow(x))) * t(x %*% theta - y) %*% (x %*% theta - y)
+    cost <- append(cost, cval)
+    delta <- abs(cost[i+1] - cost[i])
+    if((cost[i+1] - cost[i]) > 0){
+      print("The cost is increasing.  Try reducing alpha.")
+      return()
+    }
+    
+    iter <- append(iter, i)
+  }
+  # print(sprintf("Completed in %i iterations.", i))
+  list(solution = theta, fitness = cost)
+}
+
+GetOlsRmse <- function(X, y, sc = 'NONE') {
+  model <- lm(y ~ X-1)
+  #print(model$coefficients)
+  print(sc)
+  print('rmse:')
+  print(sqrt(mean(model$residuals^2)))
+  #
+  #cf <- model$coefficients[-1]
+  #browser()
+  #if (sc == 'MINMAX') {
+  #  cf <- as.vector((model$coefficients - c(1, pp.minmax$ranges[1, -4])) / c(1, (pp.minmax$ranges[2, -4] - pp.minmax$ranges[1, -4])))[-1]
+  #} 
+  #
+  #if (sc == 'STD') {
+  #  cf <- as.vector((model$coefficients - c(1, pp.std$mean[-4])) / c(1, (pp.std$std[-4])))[-1]
+  #  names(cf) <- paste0('x', 2:4)
+  #}
+  #names(cf) <- paste0('x', 2:4)
+  #
+  #print('coef:')
+  #print(cf)
+  print('#######')
+}
+
+```
+
+Dobimo enake vrednosti RMSE, torej linearne kombinacije podatkov in koficientov se pri spremenjenih skalah podatkov ne razlikujejo.
+```{r, echo=FALSE}
+GetOlsRmse(model.matrix(~as.matrix(scaled.data[scaled.index, -4])), scaled.data[scaled.index,'y'])
+GetOlsRmse(scaled.X.minmax[scaled.index, ], scaled.data[scaled.index,'y'], sc = 'MINMAX')
+GetOlsRmse(scaled.X.std[scaled.index, ], scaled.data[scaled.index,'y'], sc = 'STD')
+```
+
+### Konvergenca
+Pogledamo še konvergenco na standardiziranih podatkih. S standarizacijo se seveda zgoraj napisane lasnosti ne spremenijo. Spremeni se le skala parametrov in napak, katero je nekoliko lažje interpretirali.
+
+#### Fiksna velikost vzorca
+```{r, echo=FALSE}
+sampleSize_n50 <- 50
+nSubset_n50 <- seq(10, 500, 10)
+
+sim_n50 <- NULL
+for (n in sampleSize_n50) {
+  for (k in nSubset_n50) {
+    for (i in 1:k) {
+      index <- sample(1:nrow(X), size = n, replace = TRUE)
+      X_i <- scaled.X.std[index,]
+      y_i <- scaled.data[index,'y']
+      model_i <- summary(lm(y_i ~ X_i-1))
+      sim_n50 <- rbind(sim_n50, c(n, k, i, model_i$coefficients[, 'Estimate']))
+    }
+  }
+}
+colnames(sim_n50) <- c('sampleSize', 'nSubset', 'subset', paste0('X_i', 1:4))
+sim_n50 <- data.table(sim_n50)
+
+povp_n50 <- sim_n50[, lapply(.SD, mean), by = nSubset]
+se_n50 <- sim_n50[, lapply(.SD, sd), by = nSubset]
+se_n50 <- data.table(sweep(se_n50, MARGIN = 1, STATS = sqrt(nSubset_n50), FUN = '/'))
+
+pravi.beta <- lm(y ~ scaled.X.std-1)$coef
+names(pravi.beta) <- paste0('X_i', 1:4)
+
+convergence_n50 <- NULL
+convergence_n50.plot <- list()
+for (var in paste0('X_i', 1:4)) {
+  dtmp <- data.frame(coef = var,
+                     nSubset = povp_n50[, nSubset],
+                     estimate = povp_n50[, get(var)],
+                     std_error = se_n50[, get(var)],
+                     beta = beta[var])
+  convergence_n50 <- rbind(convergence_n50, dtmp)
+  
+  cplt <- ggplot(dtmp, aes(x = nSubset, y = estimate, col=coef)) +
+    geom_point() +
+    geom_errorbar(width=.1, aes(ymin = estimate - 1.96*std_error, ymax = estimate + 1.96*std_error)) +
+    geom_point(shape=21, size=3, fill="white") + 
+    ggtitle(paste0('Ocene in IZ za: ', var)) + 
+    theme_minimal() + 
+    theme(legend.position = "none") + 
+    geom_hline(yintercept = pravi.beta[var])
+  
+  convergence_n50.plot[[var]] <- cplt
+  
+}
+
+
+convergence_n50.plot.grid <- grid.arrange(grobs = convergence_n50.plot, ncol=2)
+```
+
+
+#### Fiksno število vzorcev (subsetov)
+```{r, echo=FALSE}
+sampleSize_k50 <- seq(10, 500, 10)
+nSubset_k50 <- 50
+
+sim_k50 <- NULL
+for (n in sampleSize_k50) {
+  for (k in nSubset_k50) {
+    for (i in 1:k) {
+      index <- sample(1:nrow(X), size = n, replace = TRUE)
+      X_i <- scaled.X.std[index,]
+      y_i <- scaled.data[index,'y']
+      model_i <- summary(lm(y_i ~ X_i-1))
+      sim_k50 <- rbind(sim_k50, c(n, k, i, model_i$coefficients[, 'Estimate']))
+    }
+  }
+}
+colnames(sim_k50) <- c('sampleSize', 'nSubset', 'subset', paste0('X_i', 1:4))
+sim_k50 <- data.table(sim_k50)
+
+
+povp_k50 <- sim_k50[, lapply(.SD, mean), by = sampleSize]
+se_k50 <- sim_k50[, lapply(.SD, sd), by = sampleSize]
+se_k50 <- data.table(sweep(se_k50, MARGIN = 1, STATS = sqrt(sampleSize_k50), FUN = '/'))
+
+
+convergence_k50 <- NULL
+convergence_k50.plot <- list()
+for (var in paste0('X_i', 1:4)) {
+  dtmp <- data.frame(coef = var,
+                     sampleSize = povp_k50[, sampleSize],
+                     estimate = povp_k50[, get(var)],
+                     std_error = se_k50[, get(var)],
+                     beta = beta[var])
+  convergence_k50 <- rbind(convergence_k50, dtmp)
+  
+  cplt <- ggplot(dtmp, aes(x = sampleSize, y = estimate, col=coef)) +
+    geom_point() +
+    geom_errorbar(width=.1, aes(ymin = estimate - 1.96*std_error, ymax = estimate + 1.96*std_error)) +
+    geom_point(shape=21, size=3, fill="white") + 
+    ggtitle(paste0('Ocene in IZ za: ', var)) + 
+    theme_minimal() + 
+    theme(legend.position = "none") + 
+    geom_hline(yintercept = pravi.beta[var])
+  
+  convergence_k50.plot[[var]] <- cplt
+  
+}
+
+convergence_k50.plot.grid <- grid.arrange(grobs = convergence_k50.plot, ncol=2)
+```
+
+### Ocenjevanje parametrov z različnimi metodami
+V tem poglavju sledi še primerjava ocen parametrov pribljena z različnimi algoritmi. Primerjava je izvedena na istem podatkovnem setu kot v zgornjem poglavju, torej žreb vzorca velikega 30 enot. Primerjali bomo metodo OLS in dve numerični metodi, gradientni spust in genetski algoritem.
+
+Te metode so pogojene na hiperparametre, kot so learning rate, število iteracij, velikost populacije itd. V spodnjih slikah vidimo, da z gradientnem spustu v našem primeru pri 100 iteracija in standariziranih podatkih dosežemo boljše rezultate kot z genetskim algoritmom in enake kot z ols. Pri minmax sklairanih podatkih pa je najboljši ols, za tem genetski algoritem in nato gradientni spust. Z dovolj velikim številom iteracij bi v tem primeru zagotovo prišli do enakih ocen parametrov. V splošnem moramo pri optimizacijskih metodah biti previdini, saj lahko zaidejo v lokalni minimum, zato je pri gradientnem spustu potrebno algoritem zagnati večkrat, pri genetskih algoritmih pa uporabiti mutacije.
+
+```{r, echo=FALSE}
+CompareOptim <- function(X, y, iter = 100) {
+  # OLS
+  ols.beta <- t(solve(t(X) %*% X) %*% t(X) %*% y)
+  colnames(ols.beta) <- paste0('x', 1:length(ols.beta))
+  ols.RMSE <- RMSE(pred = X %*% t(ols.beta), obs = y)
+  
+  ## GD
+  gd.model <- gd(X, y, iter)
+  gd.beta <- gd.model$solution
+  gd.plot <- data.frame(iteration = 1:length(gd.model$fitness),
+                        cost = gd.model$fitness)
+  gd.RMSE <- RMSE(pred = X %*% gd.beta, obs = y)
+  gd.costplot <- ggplot(gd.plot, aes(x=iteration, y=cost)) + 
+    geom_point() + 
+    ggtitle('Gradient descent cost function') + 
+    theme_minimal()
+  
+  ## GA
+  ga.model <- ga(type='real-valued', 
+                 lower = rep(-15, dim(X)[2]), 
+                 upper = rep(15, dim(X)[2]),
+                 popSize = 500,
+                 maxiter = iter, 
+                 keepBest = TRUE,
+                 seed = 1,
+                 fitness = function(beta) -cost(X, y, beta),
+                 monitor = NULL)
+  
+  ga.beta <- ga.model@solution
+  ga.RMSE <- RMSE(pred = X %*% t(ga.beta), obs = y)
+  tmp <- plotMDS.invisible(ga.model)
+  ga.plot <- data.frame(generation = 1:iter,
+                        cost = tmp$mean)
+  
+  ga.costplot <- ggplot(ga.plot, aes(x=generation, y=-cost)) + 
+    geom_point() + 
+    ggtitle('Genetic algorithm cost function') + 
+    theme_minimal()
+  
+ costplot<- grid.arrange(gd.costplot, ga.costplot, ncol=2)
+ 
+ # COMPARISON
+ ols.res <- GetRes(ols.beta, X, y)
+ gd.res <- GetRes(t(gd.beta), X, y)
+ ga.res <- GetRes(ga.beta, X, y)
+ 
+ comp <- rbind(ols.res, gd.res, ga.res)
+ comp$Method <- rep(c('ols', 'gradient', 'genetic'), each = length(ols.beta))
+ comp <- data.table(comp)
+ 
+ comp.plot <- list()
+ for (i in paste0('x', 1:4)) {
+   comp.plot[[i]] <- ggplot(comp[Parameter == i], aes(x = Method, y = Estimate, group=1)) +
+     geom_point() +
+     geom_errorbar(width=.1, aes(ymin = Estimate - 1.96*`Std. Error`, ymax = Estimate + 1.96*`Std. Error`)) +
+     geom_point(shape=21, size=3, fill="white") + 
+     ggtitle(paste0('Ocene in IZ glede na metodo za ', i)) + 
+     theme_minimal()
+ }
+ comp.plot <- grid.arrange(grobs = comp.plot, ncol=2)
+ 
+ print(data.frame(ols.RMSE, gd.RMSE, ga.RMSE))
+ 
+}
+
+plotMDS.invisible <- function(...){
+  ff <- tempfile()
+  png(filename=ff)
+  res <- plot(...)
+  dev.off()
+  unlink(ff)
+  res
+}
+```
+
+#### Minmax skaliranje
+```{r, echo=FALSE}
+suppressWarnings(CompareOptim(X = scaled.X.minmax,
+                              y = scaled.y.minmax,
+                              iter = 100))
+```
+
+#### Standarizacija
+```{r, echo=FALSE}
+suppressWarnings(CompareOptim(X = scaled.X.std,
+                              y = scaled.y.std,
+                              iter = 100))
+```
+
+# ZAKLJUČEK
+Iz prvega dela domače naloge smo videli, da bomo z večanjem bodisi velikosti vzorca ali števila vzorcev strmeli h boljši oceni parametrov. Ugotovili smo tudi, da bomo hitreje dobili boljše ocene z večjanjem velikosti vzorca. Opazili smo tudi, da so ocene neodvisnih spremenljivk na manjši skali slabše in imajo večjo standardno napako. Intervali zaupanja v primeru bodisi premajhne velikosti vzorca ali števila vzorcev preozek (asimptotski IZ). Nato smo videli, da spreminjanje skale bodisi s standarizacijo ali skaliranjem nima vpliva. Enako velja za npr. logistično regresijo in odločitvena drevesa. Kljub temu si s tem lahko pomagamo pri vizualizaciji parametrov na isti skali in določanju velikosti učinka posameznih regresorjev. Standarizacija je vseeno ključnega pomena pri optimizaciji, saj pomaga pri konvergenci algoritmov.
