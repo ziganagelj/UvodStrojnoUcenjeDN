@@ -10,6 +10,7 @@ output:
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+options(warn=-1)
 library(data.table)
 library(randomForest)
 library(caret)
@@ -19,6 +20,7 @@ library(dplyr)
 library(car)
 library(psych)
 library(ROCR)
+library(rpart.plot)
 ```
 # UVOD
 Z zbranimi podatki želimo napovedati ali ima določen pacient prisotno bolezen srca. Za ta klasifikacijski problem bomo primerjali tri različne metode: KNN, logistična regresija in odločitvena drevesa.
@@ -32,7 +34,7 @@ Pri vsaki metodi bomo najprej na učnih podatkih s pomočjo prečnega preverjanj
 data <- data.table(read.csv("./data/heart.csv"))
 colnames(data)[1] <- 'age'
 
-sum(complete.cases(data))/nrow(data)
+# sum(complete.cases(data))/nrow(data)
 
 # train/test split
 set.seed(23)
@@ -57,9 +59,7 @@ test <- data.factor[-train.index, ]
 ```
 
 
-Najprej sem preveril ali so prisotne manjkajoče vrednosti, teh ni bilo. Nato sem definiral katere spremenljivke so kategoricne in numerične. Naša odvisna spremenljivka oziroma razred je target. Podatke razdelimo na učno (243) in testno množico (60), kjer je 80% podatov v učni. 
-
-Podatke si ogledamo le na učnem delu podatkov.
+Najprej smo preverili ali so prisotne manjkajoče vrednosti, teh ni bilo. Nato smo definiral katere spremenljivke so kategorične in numerične. Naša odvisna spremenljivka oziroma razred je target. Podatke razdelimo na učno (243) in testno množico (60), kjer je 80% podatov v učni. Podatke si ogledamo le na učnem delu podatkov.
 ```{r, echo=FALSE}
 str(train)
 describe(train)
@@ -74,182 +74,219 @@ plot_density(data[train.index, ..num])
 plot_correlation(data[train.index, -..label])
 ```
 
-Vidimo, da sta obe vrednosti odvisne spremenljivke target zastopani približno enakomerno. Vse spremenljivke so porazdeljene približnost normalno. Ponovno nam v oči pade oldpeak kjer je zelo velika koncentracija pri vrednosti 0. Nekoliko večje korelacije so med slope in oldpeak in thalach z exang, oldpeak and slope. Vecja korelacije je tudi med thalach in age. Pričakujemo da oldpeak ne bo ena izmed izbranih spremenljivk, saj je močno kolerirani z nekaterimi drugimi, prav tako je pa zelo variabilna.
+Vidimo, da sta obe vrednosti odvisne spremenljivke target zastopani približno enakomerno. Vse spremenljivke so porazdeljene približnost normalno. Ponovno nam v oči pade oldpeak kjer je zelo velika koncentracija pri vrednosti 0. Nekoliko večje korelacije so med slope in oldpeak in thalach z exang, oldpeak and slope. Večja korelacije je tudi med thalach in age.
 
-# IZBIRA MODELA S PREČNIM PREVERJANJEM
-Za metriko bomo uporabili accuracy, torej delež pravilno klasicifiranih enot. Najprej si ogledamo baseline accuracy, nato pa s pomočjo prečnega preverjanja določimo najboljši napovedni model z iskanjem najboljše kombinacije neodvisnih spremenljivk in parametrov. Odločil sem se, da bom pri modelu KNN dodatno gledal parameter števila sosedov k, pri klasifikacijskih drevesih pa parameter maksimalne globine. Vsi numerični podatki v modelih so sklalirani.
+# IZBIRA MODELA
+Izbira modela bo potekala v dveh korakih, najprej bomo določili najboljšo kombinacijo spremenljivk za vsako metodo, nato pa na modelih z izbranimi spremenljivkami poiskali najboljše hiperparametre. Naša optimizacija napovednega modela bo temeljila na metriki klasifikacijske točnosti, torej delež pravilno klasicifiranih enot. Za občutek si najprej ogledamo osnovno (baseline) klasifikacijsko točnost, nato pa določimo najboljši napovedni model z iskanjem najboljše kombinacije neodvisnih spremenljivk in hiperparametrov. Pri vseh korakih za boljše ocene uporabimo  prečno preverjanje in sicer k-fold cross validation z delitvijo na 10 delov. Torej na 9 delih model naučimo in nato zadnjem, neuporabljenem delu ocenimo točnost modela. Odločil sem se, da bom pri modelu KNN dodatno gledal hiperparameter števila sosedov k, pri klasifikacijskih drevesih pa hiperparameter maksimalne globine. Vsi številčni podatki v modelih so standarizirani.
 
 ## Baseline
 Na testnih podatkih je delež enot z izzidom 1 enak: ```r round(sum(as.numeric(train$target) - 1) / length(train$target), 2) ```. Torej če bi za vsako enoto napovedovali brez kakršnih koli informacij bi dogodek napovedali s to verjetnostjo. Naš cilj izdelati boljši model.
 
-## Prečno preverjanje
-Najprej definiramo vse možne kombinacije spremenljivk. Izbrali bomo nekoliko bolj robustno metodo in preverili vse možne kombinacije. Za vsako kombinacijo bomo izvedli k-fold cross validation z delitvijo na 10 delov. Torej na 9 delih model naučimo in nato zadnjem, neuporabljenem delu ocenimo točnsot modela.
+## Spremenljivke
+Za izbiro nabora spremenljivk obstajata dve skupini metod: wrapper in filter. Wrapper metode vrednotijo napovedni model z različnimi kombinacijami spremenljivk in s tem maksimizirajo model glede na določeno metriko (recursive feature elimination, genetic algorithms). Filter metode pa ocenijo relevantnost posameznih spremenljivk brez napovednega modela na podlagi izbranih kriterijev (univariatni filtri). Saj je naš cilj izbrati čimbolj točen napovedni model, se bomo poslužili prve metode. Želel sem preverjati obe metodi backwards selection in genetski algoritem, vendar je moja implementacija trajala predolgo.
+
+### Backwards selection
+Metoda deluje tako, da najprej v model vključimo vse spremenljivke, katere rangiramo po pomembnosti za model. Ob vsaki iteraciji je v naslednjem modelu vključenih le k najboljše rangiranih spremenljivk. Ta model zgradimo ponovno in ocenimo njegovo točnost. Postopek ponovimo dokler ne najdemo najboljše kombinacije spremenljivk.
+
+
+```{r, echo=FALSE}
+set.seed(10)
+ctrl <- rfeControl(functions = rfFuncs,
+                   method = "cv",
+                   number = 10)
+subsets <- c(1:13)
+
+ProfileKNN <- rfe(x = train[, -6],
+                 y = train$target,
+                 sizes = subsets,
+                 rfeControl = ctrl,
+                 preProc = c("center", "scale"),
+                 method="knn")
+
+ProfileLog <- rfe(x = train[, -6],
+                 y = train$target,
+                 sizes = subsets,
+                 rfeControl = ctrl,
+                 preProc = c("center", "scale"),
+                 method="glm")
+
+ProfileTree <- rfe(x = train[, -6],
+                 y = train$target,
+                 sizes = subsets,
+                 rfeControl = ctrl,
+                 preProc = c("center", "scale"),
+                 method="rpart2")
+
+
+ggplot(ProfileKNN) + theme_minimal() + ylim(c(0.7, 0.85)) + scale_x_continuous(breaks = 1:13) + ggtitle('KNN')
+ggplot(ProfileLog) + theme_minimal() + ylim(c(0.7, 0.85)) + scale_x_continuous(breaks = 1:13) + ggtitle('Logistična regresija')
+ggplot(ProfileTree) + theme_minimal() + ylim(c(0.7, 0.85)) + scale_x_continuous(breaks = 1:13) + ggtitle('Drevesa')
+
+```
+
 ```{r, echo=FALSE}
 methods <- c('knn', 'glm', 'rpart2')
+profile <- ProfileKNN
+
+
+ProfileACC <- function(profile) {
+  vars <- profile$optVariables
+  nVars <- profile$bestSubset
+  
+  res <- data.table(profile$results)
+  data.table(Formula = paste0('target~', paste(vars, collapse = '+')), Variables = nVars, res[Variables == nVars, .(Accuracy, AccuracySD)])
+}
+
+tmp <- lapply(list(ProfileKNN, ProfileLog, ProfileTree), ProfileACC)
+selected.features <- rbindlist(tmp)
+selected.features$Method = methods
+selected.features
+```
+
+Vidimo, da so v vseh treh modelih prisotne spremenljivke thal, cp, oldpeak, ca, sex, thalach in exang. Točnosti modelov z izbranimi spremenljvikami so med seboj zelo blizu, intervali zaupanaj se med seboj pokrivajo.
+
+```{r, echo=FALSE}
+# Genetic
+# set.seed(10)
+# ctrl <- gafsControl(functions = caretGA,
+#                     method = "cv",
+#                     number = 2)
+#                    
+# subsets <- c(1:13)
+# 
+# ProfileKNN <- gafs(x = train[, -6],
+#                  y = train$target,
+#                  iters = 1,
+#                  gafsControl  = ctrl,
+#                  method="knn")
+# 
+# ProfileLog <- gafs(x = train[, -6],
+#                  y = train$target,
+#                  iters = 1,
+#                  gafsControl  = ctrl,
+#                  method="glm")
+# 
+# ProfileTree <- gafs(x = train[, -6],
+#                  y = train$target,
+#                  iters = 1,
+#                  gafsControl  = ctrl,
+#                  method="rpart2")
+# 
+# 
+# ggplot(ProfileKNN) + theme_minimal() + ylim(c(0.7, 0.85)) + scale_x_continuous(breaks = 1:13) + ggtitle('KNN')
+# ggplot(ProfileLog) + theme_minimal() + ylim(c(0.7, 0.85)) + scale_x_continuous(breaks = 1:13) + ggtitle('Logistična regresija')
+# ggplot(ProfileTree) + theme_minimal() + ylim(c(0.7, 0.85)) + scale_x_continuous(breaks = 1:13) + ggtitle('Drevesa')
+```
+
+## Hiperparametri
+Za KNN in klasifikacijsko drevo s prečnim preverjanje izberemo še primerne hiperparametre.
+```{r, echo=FALSE}
 train.control <- trainControl(method = "repeatedcv",
                               number = 10,
                               savePredictions = TRUE,
                               repeats = 10)
-#  features <- colnames(X.train)
-#  n = length(features)
-#  x = 1:n
-#  
-#  comb <- NULL
-#  for (i in 1:n) {
-#      if (i == 1) {
-#          for (j in 1:n) {
-#            comb <- rbind(comb,  paste("target~", features[j]))
-#          }
-#      }
-#      else {
-#          for (j in 1:(n - i + 1)) {
-#              for (k in (j + i - 1):n) {
-#                comb <- rbind(comb, paste("target~", paste(c(features[j:(j + i - 2)], features[k]), collapse="+")))
-#                  
-#              }
-#          }
-#      }
-#  }
-#  
-#  RunModel <- function(formula, data, method, control) {
-#    model <- train(as.formula(formula), 
-#                 data = data, 
-#                 method = method,
-#                 trControl = control)
-#    #browser()
-#    model$results
-#  }
-#  
-#  SelectFeatures <- function(method, comb, data, control) {
-#    featureSelection <- NULL
-#    for (c in comb) {
-#      m <- RunModel(formula = c, data = data, method = method, control = control)
-#      featureSelection <- rbind(featureSelection, cbind(c, m))
-#    }
-#    featureSelection
-#  }
-#  
-#  
-#  
-#  selection <- lapply(methods, SelectFeatures, data = train.scaled, comb = comb, control = train.control)
-#  saveRDS(selection, "selection.rds")
-```
-
-```{r, echo=FALSE}
-#selection <- readRDS("selection.rds")
-#for (i in 1:3) {
-#  sel <- selection[[i]]
-#  print(methods[i])
-#  print(sel[order(-sel$Accuracy),][1:5,])
-#}
-```
-# IZBIRA MODELA S PREČNIM PREVERJANJEM
-Za izbiro nabora spremenljivk obstajata dve skupini metod: wrapper in filter. Wrapper metode vrednotijo napovedni model z različnimi kombinacijami spremenljivk in s tem maksimizirajo model glede na določeno metriko (recursive feature elimination, genetic algorithms). Filter metode pa ocenijo relevantnost posameznih spremenljivk brez napovednega modela na podlagi izbranih kriterijev (univariatni filtri). Saj je naš cilj izbrati čimbolj efektiven in točen model, se bomo poslužili prve metode. 
-
-```{r}
-# TODO feature elimination
-#http://topepo.github.io/caret/recursive-feature-elimination.html
-```
-
-
-metriko bomo uporabili accuracy, torej delež pravilno klasicifiranih enot. Najprej si ogledamo baseline accuracy, nato pa s pomočjo prečnega preverjanja določimo najboljši napovedni model z iskanjem najboljše kombinacije neodvisnih spremenljivk in parametrov. Odločil sem se, da bom pri modelu KNN dodatno gledal parameter števila sosedov k, pri klasifikacijskih drevesih pa parameter maksimalne globine. Vsi numerični podatki v modelih so sklalirani.
-
-## Baseline
-Na testnih podatkih je delež enot z izzidom 1 enak: ```r round(sum(as.numeric(train$target) - 1) / length(train$target), 2) ```. Torej če bi za vsako enoto napovedovali brez kakršnih koli informacij bi dogodek napovedali s to verjetnostjo. Naš cilj izdelati boljši model.
-
-## Prečno preverjanje
-Najprej definiramo vse možne kombinacije spremenljivk. Izbrali bomo nekoliko bolj robustno metodo in preverili vse možne kombinacije. Za vsako kombinacijo bomo izvedli k-fold cross validation z delitvijo na 10 delov. Torej na 9 delih model naučimo in nato zadnjem, neuporabljenem delu ocenimo točnsot modela.
-
-
-## Izbran model
-Izbrali bomo le najboljše izmed modelov glede na metodo.
-```{r, echo=FALSE}
-# selected.models <- NULL
-# for (i in 1:3) {
-#   sel <- selection[[i]]
-#   sel.model <- cbind(methods[i], sel[order(-sel$Accuracy),][1,])
-#   colnames(sel.model) <- c('method', 'formula', 'parameter', "Accuracy", "Kappa", "AccuracySD", "KappaSD")
-#   selected.models <- rbind(selected.models, sel.model)
-#   
-# }
-# selected.models
-```
-Vidimo, da logistična regresija doseže najvejčo točnost in pri tem uporabi 8 od 13 atributov, met tem ko knn doseže za 1% manjšo točnost z uporabo le 6 atributov. Če primerjamo prej omenjena modela so jima skupne spremenljivke  cp, fbs, restecg, exang in slope. Dodatne spremenljivke, ki se pojavijo v modelu z odločitvenim drevesom pa so age, trestbps, chol in thalach. Torej preseka med spremenljivkami vseh treh modelov ni.
-
-## Ocenjevanje modelov na testnih podatkih
-```{r, echo=FALSE}
 set.seed(23)
 # IZBRANI MODELI
-knn <- train(as.formula(as.character(selected.models[1, 2])),
+knn <- train(as.formula(selected.features[1, ]$Formula),
              data = train, 
-             method = selected.models[1, 1],
+             method = selected.features[1, ]$Method,
+             trControl = train.control,
+             preProcess = c("center","scale"),
+             tuneLength = 10)
+
+log <- train(as.formula(selected.features[2, ]$Formula),
+             data = train, 
+             method = selected.features[2, ]$Method,
              trControl = train.control,
              preProcess = c("center","scale"))
 
-
-
-log <- train(as.formula(as.character(selected.models[2, 2])),
+tree <- train(as.formula(selected.features[3, ]$Formula),
              data = train, 
-             method = selected.models[2, 1],
-             trControl = train.control,
-             preProcess = c("center","scale"))
-
-tree <- train(as.formula(as.character(selected.models[3, 2])),
-             data = train, 
-             method = selected.models[3, 1],
+             method = selected.features[3, ]$Method,
              trControl = train.control,
              preProcess = c("center","scale"))
 ```
 
 
-```{r}
+```{r, echo=FALSE}
+hyper <- cbind(Method = c(rep(methods[1], 10), rep(methods[2], 1), rep(methods[3], 3)),
+               rbindlist(list(knn$results,
+                              log$results,
+                              tree$results)))
+colnames(hyper)[2] <- 'Parameter'
+hyper <- data.table(hyper)
+hyper
+```
+
+
+```{r, echo=FALSE}
 ggplot(knn) + theme_minimal()
 ggplot(tree) + theme_minimal()
 ```
 
+Pri KNN izberemo število sosedov 9, pri klasifikacijskem drevesu pa maksimalno globino 6. Odločili smo se da večjih parametrov ob tem času v izogib preprileganja ne bomo uporabili.
 
-```{r}
-# TODO plot drevesa
+## Končni model
+Končni modeli z klasifikacijskimi točnostmi in hiperparametri so naslednji:
+```{r, echo=FALSE}
+hyper[Parameter %in% c('9', 'none', '6'), ]
 ```
 
-
+Klasifikacijska drevesa so zelo priročna tudi z vidika vizualizacije modela.
 
 ```{r, echo=FALSE}
-# ODSTRANJENO ZARADI SPODNJE KODE
-## NAPOVEDI
-#y.hat <- matrix(NA, nrow = 60, 3)
-#y.hat[, 1] <- predict(knn, newdata = test.scaled, type = 'prob')[, 2]
-#y.hat[, 2]<- predict(log, newdata = test.scaled, type = 'prob')[, 2]
-#y.hat[, 3] <- predict(tree, newdata = test.scaled, type = 'prob')[, 1]
-#
-## METRIKE
-#metrike <- NULL
-#for (i in 1:3) {
-#  pred <- prediction(y.hat[, i], test$target)
-#  auc <- round(as.numeric(performance(pred, "auc")@y.values), 3)
-#  acc <- round(sum(round(y.hat[, i]) == test$target) / length(test$target), 3)
-#  metrike <- rbind(metrike, cbind(methods[i], auc, acc))
-#}
-#metrike[3, 'auc'] <- 1-as.numeric(metrike[3, 'auc'])
-#metrike <- data.frame(metrike)
-#colnames(metrike)[1] <- 'metoda'
-#
-#metrike
+rpart.plot(tree$finalModel)
 ```
 
 
-```{r}
-# TODO uredi kodo
-confusionMatrix(data = predict(knn, newdata = test.scaled), reference = test.scaled$target)
-confusionMatrix(data = predict(log, newdata = test.scaled), reference = test.scaled$target)
-confusionMatrix(data = predict(tree, newdata = test.scaled), reference = test.scaled$target)
+# VREDNOTENJE MODELA
+Točnost ocenimo še na testnih podatkih.
+
+```{r, echo=FALSE}
+# PREDICTIONS
+models <- list(knn = knn,
+               log = log,
+               tree = tree)
+
+GetPred <- function(model, newdata, y) {
+  cbind(data.frame(pred = predict(model, newdata),
+                   obs = y),
+        predict(model, newdata, type = 'prob'))
+}
+
+test.res <- lapply(models, GetPred, newdata = test[, -6], y = test$target)
+
+GetConfusion <- function(df) {
+  confusionMatrix(data = df$pred, reference = df$obs)
+}
+
+conf <- lapply(test.res, GetConfusion)
+auc <- lapply(test.res, prSummary, lev = levels(test$target))
 ```
-Vidimo da glm model deluje najbolje tudi na testnih podatkih, med tem ko je odločitveno drevo preveč preprilegano na učnih podatkih. Odločili bi se za model z logistično regresijo, saj je boljši tudi od modela KNN.
 
+## KNN
+```{r, echo=FALSE}
+round(conf$knn$overall, 3)[-c(2,7)]
+auc$knn
+```
 
-## Pomembnost spremenljivk
-```{r}
-# TODO za najboljši model
-varImp(knn)
-plot(gbmImp, top = 20)
+## Logistična regresija
+```{r, echo=FALSE}
+round(conf$log$overall, 3)[-c(2,7)]
+auc$log
+```
+
+## Odločitveno drevo
+```{r, echo=FALSE}
+round(conf$tree$overall, 3)[-c(2,7)]
+auc$tree
+```
+
+Vidimo da model logistične regresije izmed vseh deluje najbolje na testnih podatkih, med tem ko je odločitveno drevo preveč preprilegano na učnih podatkih. Odločili bi se za model z logistično regresijo, saj je boljši tudi od modela KNN tako pri metriki klasifikacijska točnost in AUC. Vidimo, da je AUC katastrofalno slab.
+
+## POMEMBNOST SPREMENLJIVK
+Sedaj smo izbrali model, informativno lahko pogledamo še katere spremenljivke so najbolj pomembne. To bi lahko storili že v fazi izbire spremenljivk, vendar je ta informacija bolj vezana na vsebinsko interpretacijo (na žalost nimamo domenskega znanja).
+```{r, echo=FALSE}
+importance <- varImp(log)
+ggplot(importance) + theme_minimal()
 ```
